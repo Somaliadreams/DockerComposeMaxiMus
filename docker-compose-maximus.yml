@@ -1,0 +1,470 @@
+version: '3.7'
+
+services:
+  traefik:
+    image: traefik:latest
+    container_name: traefik
+    restart: always
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      - 80:80
+      - 443:443
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./data/traefik.yml:/traefik.yml:ro
+      - ./data/acme.json/acme.json:/acme.json
+      # Add folder with dynamic configuration yml
+      - ./data/configurations:/configurations
+    networks:
+      - proxy
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.traefik-secure.entrypoints=websecure"
+      - "traefik.http.routers.traefik-secure.rule=Host(`traefik.example.com`)"
+      - "traefik.http.routers.traefik-secure.middlewares=user-auth@file"
+      - "traefik.http.routers.traefik-secure.service=api@internal"
+      - "traefik.http.routers.whoami.tls.certresolver=letsencrypt"
+
+  portainer:
+    image: portainer/portainer-ce:latest
+    command: -H unix:///var/run/docker.sock
+    container_name: portainer
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - ./portainer_data:/data
+    networks:
+      - proxy
+    restart: always
+    ports:
+      - 9000
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.portainer-secure.entrypoints=websecure"
+      - "traefik.http.routers.portainer-secure.rule=Host(`portainer.example.com`)"
+      - "traefik.http.routers.portainer-secure.service=portainer"
+      - "traefik.http.services.portainer.loadbalancer.server.port=9000"
+ 
+  plex:
+    image: plexinc/pms-docker:latest
+    container_name: plex
+    ports:
+      - 32400:32400/tcp
+      - 32400:32400/udp
+      - 3005:3005/tcp
+      - 8324:8324/tcp
+      - 32469:32469/tcp
+      - 1900:1900/udp
+      - 32410:32410/udp
+      - 32412:32412/udp
+      - 32413:32413/udp
+      - 32414:32414/udp
+    networks:
+      - proxy
+    volumes:
+      - /mnt/gdrive/movies:/movies
+      - /mnt/gdrive/tv:/tv
+      - ~/containers/plex/config:/config
+      - ~/containers/plex/data:/data
+      - /mnt/gdrive/music:/music
+    depends_on:
+      - rclone-mount
+    environment:
+      - TZ=Europe/Madird
+      - PLEX_CLAIM=XXXXX
+      - ADVERTISE_IP=https://tv.example.com:443
+      - PLEX_UID=1000
+      - PLEX_GID=1000
+      - VERSION=docker
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.plex-secure.entrypoints=websecure"
+      - "traefik.http.routers.plex-secure.rule=Host(`tv.example.com`)"
+      - "traefik.http.routers.plex-secure.service=plex"
+      - "traefik.http.services.plex.loadbalancer.server.port=32400"
+
+
+  rclone-mount:
+    image: mumiehub/rclone-mount:latest
+    cap_add:
+      - SYS_ADMIN
+    devices:
+      - /dev/fuse
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - "/var/run/docker.sock:/tmp/docker.sock:ro"
+      - "/home/root/.config/rclone:/config"
+      - "/mnt/gdrive:/mnt/mediaefs:shared"
+    container_name: rclone-mount
+    environment:
+      -  'RemotePath=gDrive:'
+      -  'MountCommands=--allow-other --uid 1000 --gid 1000 --umask 022 --default-permissions --allow-non-empty --dir-cache-time 168h --poll-interval 5m --buffer-size 256M'
+      -  'ConfigName=rclone.conf'
+
+  qbittorrent:
+    image: "linuxserver/qbittorrent:latest"
+    container_name: qbittorrent
+    volumes:
+      - ~/containers/qbittorrent:/config
+      - /mnt/gdrive/torrents/:/downloads
+      - /home/root/docker/shared:/shared
+    depends_on:
+      - rclone-mount
+    ports:
+      - "8080:8080"
+      - "6881:6881"
+      - "6881:6881/udp"
+    restart: always
+    environment:
+      - TZ="Europe/Madrid"
+    networks:
+      - "proxy"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.qbit-secure.entrypoints=websecure"
+      - "traefik.http.routers.qbit-secure.rule=Host(`qbit.example.com`)"
+      - "traefik.http.routers.qbit-secure.service=qbittorrent"
+      - "traefik.http.services.qbittorrent.loadbalancer.server.port=8080"
+    ulimits:
+      nproc: 65535
+      nofile:
+        soft: 32000
+        hard: 40000
+
+  tautulli:
+    image: ghcr.io/linuxserver/tautulli
+    container_name: tautulli
+    networks:
+      - proxy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+    volumes:
+      - ~/containers/tautulli/:/config
+    ports:
+      - 8181:8181
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.tautulli-secure.entrypoints=websecure"
+      - "traefik.http.routers.tautulli-secure.rule=Host(`tautulli.example.com`)"
+      - "traefik.http.routers.tautulli-secure.service=tautulli"
+      - "traefik.http.services.tautulli.loadbalancer.server.port=8181"
+
+  sonarr:
+    image: ghcr.io/linuxserver/sonarr
+    container_name: sonarr
+    networks:
+      - proxy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+      - UMASK=002
+    volumes:
+      - ~/containers/sonarr/config/:/config
+      - /mnt/gdrive/tv:/tv
+      - /mnt/gdrive/torrents:/downloads
+    ports:
+      - 8989:8989
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.sonarr-secure.entrypoints=websecure"
+      - "traefik.http.routers.sonarr-secure.rule=Host(`sonar.example.com`)"
+      - "traefik.http.routers.sonarr-secure.service=sonarr"
+      - "traefik.http.services.sonarr.loadbalancer.server.port=8989"
+
+  rocketchat:
+    image: rocketchat/rocket.chat:latest
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          node main.js &&
+          s=$$? && break || s=$$?;
+          echo \"Tried $$i times. Waiting 5 secs...\";
+          sleep 5;
+        done; (exit $$s)"
+    restart: unless-stopped
+    volumes:
+      - ~/containers/rocketchat/uploads:/app/uploads
+    environment:
+      - PORT=3008
+      - ROOT_URL=http://localhost:3008
+      - MONGO_URL=mongodb://mongo:27017/rocketchat
+      - MONGO_OPLOG_URL=mongodb://mongo:27017/local
+      - MAIL_URL=smtp://smtp.email
+      - HTTPS_PROXY=http://chat.example.com
+    depends_on:
+      - mongo
+    networks:
+      - proxy
+      - rocket
+    ports:
+      - 3008:3000
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.rocket-secure.entrypoints=websecure"
+      - "traefik.http.routers.rocket-secure.rule=Host(`chat.example.com`)"
+      - "traefik.http.routers.rocket-secure.service=rocketchat"
+      - "traefik.http.services.rocketchat.loadbalancer.server.port=3008"
+
+  mongo:
+    image: mongo:4.0
+    restart: unless-stopped
+    volumes:
+     - ~/containers/mongo-rocket/data/db:/data/db
+     - ~/containers/mongo-rocket/data/dump:/dump
+    command: mongod --smallfiles --oplogSize 128 --replSet rs0 --storageEngine=mmapv1
+    labels:
+      - "traefik.enable=false"
+    container_name: mongo-rocket
+    networks:
+      - rocket
+
+  mongo-init-replica:
+    image: mongo:4.0
+    command: >
+      bash -c
+        "for i in `seq 1 30`; do
+          mongo mongo/rocketchat --eval \"
+            rs.initiate({
+              _id: 'rs0',
+              members: [ { _id: 0, host: 'localhost:27017' } ]})\" &&
+          s=$$? && break || s=$$?;
+          echo \"Tried $$i times. Waiting 5 secs...\";
+          sleep 5;
+        done; (exit $$s)"
+    depends_on:
+      - mongo
+    networks:
+      - rocket
+
+  radarr:
+    image: ghcr.io/linuxserver/radarr
+    container_name: radarr
+    networks:
+      - proxy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+    volumes:
+      - ~/containers/radarr/:/config
+      - /mnt/gdrive/movies:/movies
+      - /mnt/gdrive/torrents:/downloads
+    ports:
+      - 7878:7878
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.radarr-secure.entrypoints=websecure"
+      - "traefik.http.routers.radarr-secure.rule=Host(`radar.example.com`)"
+      - "traefik.http.routers.radarr-secure.service=radarr"
+      - "traefik.http.services.radarr.loadbalancer.server.port=7878"
+
+    prometheus:
+      image: prom/prometheus:v2.1.0
+      container_name: prometheus
+      volumes:
+        - ~/containers/prometheus/:/etc/prometheus/
+        - ~/containers/prometheus/prometheus_data:/prometheus
+      command:
+        - '--config.file=/etc/prometheus/prometheus.yml'
+        - '--storage.tsdb.path=/prometheus'
+        - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+        - '--web.console.templates=/usr/share/prometheus/consoles'
+      ports:
+        - 9090:9090
+      networks:
+        - elastic
+        - proxy
+      restart: always
+      depends_on:
+        - node-exporter
+      labels:
+        - "traefik.enable=true"
+        - "traefik.docker.network=proxy"
+        - "traefik.http.routers.prometheus-secure.entrypoints=websecure"
+        - "traefik.http.routers.prometheus-secure.rule=Host(`prometheus.example.com`)"
+        - "traefik.http.routers.prometheus-secure.service=prometheus"
+        - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+
+
+    node-exporter:
+      image: prom/node-exporter
+      volumes:
+        - /proc:/host/proc:ro
+        - /sys:/host/sys:ro
+        - /:/rootfs:ro
+      command: 
+        - '--path.procfs=/host/proc' 
+        - '--path.sysfs=/host/sys'
+        - --collector.filesystem.ignored-mount-points
+        - "^/(sys|proc|dev|host|etc|rootfs/var/lib/docker/containers|rootfs/var/lib/docker/overlay2|rootfs/run/docker/netns|rootfs/var/lib/docker/aufs)($$|/)"
+      ports:
+        - 9100:9100
+      networks:
+        - elastic
+      restart: always
+
+  medusa:
+    image: ghcr.io/linuxserver/medusa
+    container_name: medusa
+    networks:
+      - proxy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+    volumes:
+      - ~/containers/medusa/:/config
+      - /mnt/gdrive/tv:/tv
+      - /mnt/gdrive/torrents:/downloads
+    ports:
+      - 8081:8081
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.medusa-secure.entrypoints=websecure"
+      - "traefik.http.routers.medusa-secure.rule=Host(`medusa.example.com`)"
+      - "traefik.http.routers.medusa-secure.service=medusa"
+      - "traefik.http.services.medusa.loadbalancer.server.port=8081"
+
+  lidarr:
+    image: ghcr.io/linuxserver/lidarr
+    container_name: lidarr
+    networks:
+      - proxy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/London
+    volumes:
+      - ~/containers/lidarr/config:/config
+      - /mnt/gdrive/music/:/music
+      - /mnt/gdrive/torrents:/downloads
+    ports:
+      - 8686:8686
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.lidarr-secure.entrypoints=websecure"
+      - "traefik.http.routers.lidarr-secure.rule=Host(`lidar.example.com`)"
+      - "traefik.http.routers.lidarr-secure.service=lidarr"
+      - "traefik.http.services.lidarr.loadbalancer.server.port=8686"
+
+
+  jackett:
+    image: ghcr.io/linuxserver/jackett
+    container_name: jackett
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+    networks:
+      - proxy
+    volumes:
+      - ~/containers/jackett/config:/config
+      - /mnt/gdrive/torrents:/downloads
+    ports:
+      - 9117:9117
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.jackett-secure.entrypoints=websecure"
+      - "traefik.http.routers.jackett-secure.rule=Host(`jacket.example.com`)"
+      - "traefik.http.routers.jackett-secure.service=jackett"
+      - "traefik.http.services.jackett.loadbalancer.server.port=9117"
+
+    restart: unless-stopped
+
+
+  firefly:
+    image: jc5x/firefly-iii:latest
+    volumes:
+      - ~/containers/fireflyfirefly_iii_upload:/var/www/html/storage/upload
+      - ~/containers/fireflyfirefly_iii_export:/var/www/html/storage/export
+    env_file: .env
+    ports:
+      - 8003:8080
+    depends_on:
+      - fireflyiiidb
+    networks:
+      - proxy
+      - firefly
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.firefly-secure.entrypoints=websecure"
+      - "traefik.http.routers.firefly-secure.rule=Host(`firefly.example.com`)"
+      - "traefik.http.routers.firefly-secure.service=firefly"
+      - "traefik.http.services.firefly.loadbalancer.server.port=8080"
+
+  fireflyiiidb:
+    image: yobasystems/alpine-mariadb:latest
+    environment:
+      - MYSQL_RANDOM_ROOT_PASSWORD=yes
+      - MYSQL_USER=firefly
+      - MYSQL_PASSWORD=PASSWORD
+      - MYSQL_DATABASE=firefly
+    volumes:
+      - firefly_iii_db:/var/lib/mysql
+    networks:
+      - firefly
+volumes:
+  firefly_iii_upload:
+  firefly_iii_export:
+  firefly_iii_db:
+
+
+  bazarr:
+    image: ghcr.io/linuxserver/bazarr
+    container_name: bazarr
+    networks:
+      - proxy
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Europe/Madrid
+    volumes:
+      - ~/containers/bazarr/:/config
+      - /mnt/gdrive/movies:/movies
+      - /mnt/gdrive/tv:/tv
+    ports:
+      - 6767:6767
+    restart: unless-stopped
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.bazarr-secure.entrypoints=websecure"
+      - "traefik.http.routers.bazarr-secure.rule=Host(`bazar.example.com`)"
+      - "traefik.http.routers.bazarr-secure.service=bazarr"
+      - "traefik.http.services.bazarr.loadbalancer.server.port=6767"
+
+
+volumes:
+  portainer_data:
+      
+networks:
+  proxy:
+    external: true
+  rocket:
+    external: true
+  elastic:
+    external: true
+  firefly:
+    external: true
